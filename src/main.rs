@@ -1,7 +1,9 @@
 #[derive(Debug, thiserror::Error)]
 pub enum HDError {
     #[error["Address is out of bound"]]
-    OutOfBound
+    OutOfBound,
+    #[error["Addition overflows"]]
+    Overflow,
 }
 
 #[repr(u8)]
@@ -63,7 +65,7 @@ impl Default for Hd44780 {
 
             n: true,
             i_d: true,
-            s: true,
+            s: false,
             display: true,
             cursor: true, 
             blink: true,
@@ -272,8 +274,8 @@ impl Hd44780Controller {
     }
     
     pub fn handle_entry_mode_set(&mut self, value: u8) -> Result<(), HDError> {
-        self.model.s   = (value & 0x1) != 0x1;
-        self.model.i_d = (value & 0x2) != 0x2;
+        self.model.s   = (value & 0x1) != 0;
+        self.model.i_d = (value & 0x2) != 0;
         Ok(())
     }
     
@@ -318,6 +320,66 @@ impl Hd44780Controller {
         
         Ok(())
     }
+
+    pub fn increment_address_counter(&mut self) -> Result<(), HDError> {
+        let mut new_ac: usize = self.model.address_counter.checked_add(1).ok_or(HDError::Overflow)?;
+
+
+        if (self.memory_mode == LCDMemoryMode::DDRAM) && (new_ac >= DDRAMSIZE) {
+            new_ac = DDRAMSIZE - 1;
+        } else if (self.memory_mode == LCDMemoryMode::CGRAM) && (new_ac >= CGRAMSIZE) {
+            new_ac = CGRAMSIZE - 1;
+        }
+
+        self.model.address_counter = new_ac;
+        Ok(())
+    }
+
+    pub fn decrement_address_counter(&mut self) -> Result<(), HDError> {
+        let mut new_ac: usize = self.model.address_counter;
+        
+        if new_ac > 0 {
+            new_ac = new_ac - 1;
+        } else {
+            new_ac = 0;
+        }
+        
+        self.model.address_counter = new_ac;
+        Ok(())
+    }
+    
+    pub fn putc(&mut self, c: u8) -> Result<(), HDError> {
+        if self.model.address_counter == 0 {
+            _ = self.set_ddram(0, c)?;
+
+            if !self.model.s {
+                _ = self.increment_address_counter()?;
+            }
+
+            return Ok(());
+        }
+        
+        if self.model.s && !self.model.i_d {
+            // Shift, and move right
+            _ = rotate_array_right(&mut self.model.ddram, self.model.address_counter)?;
+            _ = self.set_ddram(0, c)?;
+        } else if self.model.s && self.model.i_d {
+            // Shift, and move left
+            _ = rotate_array_left(&mut self.model.ddram, self.model.address_counter)?;
+            _ = self.set_ddram(self.model.address_counter - 1, c)?;
+        } else if !self.model.s && !self.model.i_d {
+            // Move cursor, and insert at the start
+            _ = rotate_array_right(&mut self.model.ddram, self.model.address_counter)?;
+            _ = self.set_ddram(0, c)?;
+            _ = self.increment_address_counter()?;
+        } else {
+            _ = self.set_ddram(self.model.address_counter, c)?;
+            _ = self.increment_address_counter()?;
+            
+        }
+
+        Ok(())
+    }
     
     pub fn handle_data_write(&mut self, value: u8) -> Result<(), HDError> {
         
@@ -333,26 +395,70 @@ impl Hd44780Controller {
            
         Ok(())
     }
+
+    pub fn watch_ddram(&mut self) -> Result<(), HDError> {
+        for (i,n) in self.model.ddram.iter().enumerate() {
+            print!("{:02x} ", n);
+
+            if (i & 0xF) == 0xF {
+                print!("\n");
+            }
+        }
+    
+        print!("\n");
+    
+        for (i,n) in self.model.ddram.iter().enumerate() {
+            print!("{}  ", *n as char);
+            
+            if (i & 0xF) == 0xF {
+                print!("\n");
+            }
+        }
+    
+        print!("\n");
+        Ok(())
+    }
 }
 
 fn main() {
     let mut lcd: Hd44780Controller = Hd44780Controller::new(LCDType::A02, LCDControllerType::DirectCommand);
 
     // Small test
-    
-    let _ = lcd.set_ddram(0, 0x41).unwrap();
-    let _ = lcd.set_ddram(1, 0x42).unwrap();
-    let _ = lcd.set_ddram(2, 0x43).unwrap();
-    let _ = lcd.set_ddram(3, 0x44).unwrap();
-    let _ = lcd.set_ddram(4, 0x45).unwrap();
-    let _ = lcd.set_ddram(5, 0x46).unwrap();
-    let _ = lcd.set_ddram(6, 0x47).unwrap();
-    let _ = lcd.set_ddram(7, 0x48).unwrap();
+    lcd.putc('A' as u8);
+    lcd.putc('B' as u8);
+    lcd.putc('C' as u8);
+    lcd.putc('D' as u8);
+    lcd.putc('E' as u8);
+    lcd.putc('F' as u8);
+    lcd.putc('G' as u8);
+    lcd.putc('H' as u8);
 
-    lcd.rotate_ddram(true, 4);
+    lcd.watch_ddram();
 
-    for n in lcd.model.ddram.iter() {
-        print!("{:02x} ", n);
-    }
+    lcd.model.s = true;
+    lcd.model.i_d = false;
     
+    lcd.putc('I' as u8);
+    lcd.putc('J' as u8);
+    lcd.putc('K' as u8);
+    
+    lcd.watch_ddram();
+    
+    lcd.model.s = true;
+    lcd.model.i_d = true;
+    
+    lcd.putc('L' as u8);
+    lcd.putc('M' as u8);
+    lcd.putc('N' as u8);
+    
+    lcd.watch_ddram();
+    
+    lcd.model.s = false;
+    lcd.model.i_d = false;
+    
+    lcd.putc('O' as u8);
+    lcd.putc('P' as u8);
+    lcd.putc('Q' as u8);
+    
+    lcd.watch_ddram();
 }
